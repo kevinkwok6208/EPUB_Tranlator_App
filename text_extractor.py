@@ -1,0 +1,126 @@
+import os
+import glob
+import re
+from bs4 import BeautifulSoup
+import sys
+
+def get_base_path():
+    """Return the base path for the application (handles PyInstaller bundle)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    else:
+        return os.getcwd()
+
+class TextExtractor:
+    def __init__(self, input_dir, output_file, platform):
+        self.input_dir = input_dir
+        self.output_file = output_file
+        self.platform = platform
+        self.base_dir = get_base_path()
+
+    def get_file_number(self, filename):
+        if self.platform == 'kobo':
+            match = re.search(r'p-(\d+)\.xhtml', os.path.basename(filename))
+            return int(match.group(1)) if match else float('inf')
+        
+        elif self.platform == 'kindle':
+            match = re.search(r'part(\d+)\.xhtml', os.path.basename(filename))
+            return int(match.group(1)) if match else float('inf')
+        
+    def extract_text(self):
+        output_file = os.path.join(self.base_dir, self.output_file)
+        input_dir = os.path.join(self.base_dir, self.input_dir)
+        
+        if self.platform == 'kobo':
+            xhtml_files = sorted(glob.glob(os.path.join(input_dir, "p-[0-9]*.xhtml")), key=self.get_file_number)
+
+            # Open the output file to write the extracted text
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            with open(output_file, "w", encoding="utf-8") as outfile:
+                # Process each XHTML file
+                for file_path in xhtml_files:
+                    # Read the XHTML file
+                    with open(file_path, "r", encoding="utf-8") as infile:
+                        content = infile.read()
+                    
+                    # Parse the XHTML content with BeautifulSoup
+                    soup = BeautifulSoup(content, "lxml")
+                    
+                    # Find all <p> tags
+                    paragraphs = soup.find_all("p")
+                    for p in paragraphs:
+                        # Extract text from all <span> elements with class="koboSpan"
+                        spans = p.find_all("span", class_="koboSpan")
+                        if spans:  # Only process <p> tags with koboSpan elements
+                            paragraph_text = "".join(span.get_text(strip=True) for span in spans)
+                            # Write to output file, including section markers like ◇
+                            if paragraph_text:
+                                outfile.write(paragraph_text + "\n")
+                            # Update the <p> tag's content
+                            p.clear()
+                            p.append(paragraph_text)
+                        else:
+                            # Write a blank line for empty <p> tags (e.g., <p><br/></p>)
+                            outfile.write("\n")
+                    
+                    # Write the modified XHTML back to the original file (uncomment if needed)
+                    '''
+                    with open(file_path, "w", encoding="utf-8") as xhtml_outfile:
+                        xhtml_outfile.write(str(soup))
+                    '''
+                    # Add an extra newline between files
+                    outfile.write("\n")
+
+            print(f"Text extracted to {output_file} and XHTML files updated")
+        
+        elif self.platform == 'kindle':
+            xhtml_files = sorted(glob.glob(os.path.join(input_dir, "part[0-9]*.xhtml")), key=self.get_file_number)
+
+            # Open the output file to write the extracted text
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            with open(output_file, "w", encoding="utf-8") as outfile:
+                # Process each XHTML file
+                for file_path in xhtml_files:
+                    # Read the XHTML file
+                    with open(file_path, "r", encoding="utf-8") as infile:
+                        content = infile.read()
+                    
+                    # Parse the XHTML content with BeautifulSoup
+                    soup = BeautifulSoup(content, "lxml")
+                    
+                    # Find all <p> tags
+                    paragraphs = soup.find_all("p")
+                    for p in paragraphs:
+                        # Handle <ruby> tags for furigana
+                        ruby_tags = p.find_all("ruby")
+                        for ruby in ruby_tags:
+                            rb = ruby.find("rb")  # Kanji
+                            rt = ruby.find("rt")  # Furigana
+                            if rb and rt:
+                                # Replace <ruby> with kanji and furigana in parentheses
+                                ruby.replace_with(f"{rb.get_text(strip=True)}({rt.get_text(strip=True)})")
+                            elif rb:
+                                ruby.replace_with(rb.get_text(strip=True))  # Fallback to kanji only
+                            
+                        # Extract text from <span> elements (e.g., class_s91 for punctuation)
+                        spans = p.find_all("span")
+                        for span in spans:
+                            span.replace_with(span.get_text(strip=True))  # Replace span with its text
+                        
+                        # Get the cleaned paragraph text
+                        paragraph_text = p.get_text(strip=True)
+                        if paragraph_text:
+                            outfile.write(paragraph_text + "\n")
+                        else:
+                            # Write a blank line for empty <p> tags
+                            outfile.write("\n")
+                    
+                    # Write the modified XHTML back to the original file (uncomment if needed)
+                    '''
+                    with open(file_path, "w", encoding="utf-8") as xhtml_outfile:
+                        xhtml_outfile.write(str(soup))
+                    '''
+                    # Add an extra newline between files
+                    outfile.write("\n")
+
+            print(f"Text extracted to {output_file} and XHTML files updated")

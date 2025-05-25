@@ -22,17 +22,22 @@ def get_file_number(filename):
     return int(match.group(1)) if match else float('inf')
 
 class TextAnalyzer:
-    """Handles text analysis for Japanese character detection"""
+    """Handles text analysis for Japanese and English character detection"""
     
     def __init__(self):
         self.japanese_pattern = re.compile(
             '[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\uFF00-\uFFEF]'
         )
         self.japanese_specific_pattern = re.compile(r'[ぁ-んァ-ン]')
+        self.english_pattern = re.compile(r'[a-zA-Z]')  # Basic English detection
 
     def is_japanese(self, text: str) -> bool:
         """Check if text contains Japanese characters"""
         return bool(self.japanese_pattern.search(text))
+
+    def is_english(self, text: str) -> bool:
+        """Check if text contains English characters"""
+        return bool(self.english_pattern.search(text))
 
     def is_untranslated(self, ch_text: str) -> bool:
         """Check if text contains Japanese-specific characters (for JSON validation)"""
@@ -85,7 +90,7 @@ class Translator:
                     {
                         "role": "system",
                         "content": (
-                            "You are a professional translator specialized in Detected Language to **Traditional Chinese (繁體中文)** translation. "
+                            "You are a professional translator specialized in translating from any language to **Traditional Chinese (繁體中文)**. "
                             "Your translations must **exclusively use Traditional Chinese characters** (e.g., 「繁體中文」, not 「简体中文」).\n\n"
                             "### Rules:\n"
                             "1. Preserve original formatting, punctuation, and line breaks.\n"
@@ -97,7 +102,7 @@ class Translator:
                     },
                     {
                         "role": "user", 
-                        "content": f"Translate the following Detected Language text to **Traditional Chinese (繁體中文)**:\n{combined_text}\n\n"
+                        "content": f"Translate the following text to **Traditional Chinese (繁體中文)**:\n{combined_text}\n\n"
                                    "**Reminder**: Use **only** Traditional Chinese characters and maintain original formatting."
                     }
                 ],
@@ -119,7 +124,7 @@ class Translator:
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             prompt = (
-                "Translate the following Detected Language texts to **Traditional Chinese (繁體中文)**:\n\n"
+                "Translate the following texts to **Traditional Chinese (繁體中文)**:\n\n"
                 "===SPLIT===\n\n"
                 "**Important Requirements**:\n"
                 "- Use **exclusively Traditional Chinese characters** (e.g., 「圖」 not 「图」).\n"
@@ -138,12 +143,12 @@ class Translator:
                         {
                             "role": "system",
                             "content": (
-                                "You are a professional translator specialized in Detected Language to **Traditional Chinese**.\n"
+                                "You are a professional translator specialized in translating from any language to **Traditional Chinese**.\n"
                                 "### Key Rules:\n"
                                 "1. **Always** output in Traditional Chinese (繁體中文).\n"
                                 "2. Reject any Simplified Chinese characters.\n"
                                 "3. Maintain original formatting, including spaces and line breaks.\n"
-                                "4. Localize terms appropriately (e.g., 'ソフトウェア' → '軟體', not '软件').\n"
+                                "4. Localize terms appropriately (e.g., 'software' → '軟體', not '软件').\n"
                                 "5. If the text is already Chinese, verify it's Traditional or convert it."
                             )
                         },
@@ -204,7 +209,7 @@ class FileProcessor:
                     translated_paragraphs.append(cached_translation)
                     continue
 
-                if self.text_analyzer.is_japanese(paragraph):
+                if self.text_analyzer.is_japanese(paragraph) or self.text_analyzer.is_english(paragraph):
                     current_batch.append(paragraph)
                 else:
                     translated_paragraphs.append(paragraph)
@@ -237,8 +242,15 @@ class JsonProcessor:
         self.text_analyzer = TextAnalyzer()
 
     def load_json(self, cache_file: str) -> Dict[str, str]:
-        with open(cache_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            print(f"Cache file {cache_file} not found. Starting with empty cache.")
+            return {}
+        except json.JSONDecodeError:
+            print(f"Error decoding JSON in {cache_file}. Starting with empty cache.")
+            return {}
 
     def save_json(self, json_data: Dict[str, str]):
         os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
@@ -284,11 +296,23 @@ class TranslationManager:
         self.translator = Translator(api_url, api_key, model)
         self.file_processor = FileProcessor(input_file, output_file)
         self.json_processor = JsonProcessor(cache_files)
+        self.text_analyzer = TextAnalyzer()
 
     def process_all(self):
         """Run both file and JSON processing"""
         print("Starting text file translation...")
         self.file_processor.process(self.translator)
+        
+        # Check if any translatable text (Japanese or English) was found
+        try:
+            with open(self.file_processor.input_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                if not (self.text_analyzer.is_japanese(content) or self.text_analyzer.is_english(content)):
+                    print("No Japanese or English text detected. Skipping JSON translation update.")
+                    return
+        except Exception as e:
+            print(f"Error checking input file: {e}")
+        
         print("\nStarting JSON translation update...")
         self.json_processor.process(self.translator)
 
@@ -408,6 +432,9 @@ def gpt_translation(api_url, api_key, model, platform, input_dir, translation_js
     ]
     input_dir = os.path.join(base_dir, input_dir)
     translation_json = os.path.join(base_dir, translation_json)
+
+    # Ensure temp directory exists
+    os.makedirs(os.path.join(base_dir, 'temp'), exist_ok=True)
 
     # Initialize and run the manager
     manager = TranslationManager(api_url, api_key, model, input_file, output_file, cache_files)

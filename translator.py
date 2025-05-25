@@ -6,6 +6,8 @@ import glob
 from typing import List, Dict
 from bs4 import BeautifulSoup
 import sys
+from file_manager import find_subfolder_path
+from pathlib import Path
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""
@@ -13,6 +15,11 @@ def get_base_path():
         return os.path.dirname(sys.executable)
     else:
         return os.getcwd()
+
+def get_file_number(filename):
+    """Extract numerical part from filename for sorting."""
+    match = re.search(r'(\d+)', os.path.basename(filename))
+    return int(match.group(1)) if match else float('inf')
 
 class TextAnalyzer:
     """Handles text analysis for Japanese character detection"""
@@ -74,11 +81,11 @@ class Translator:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages = [
+                messages=[
                     {
                         "role": "system",
                         "content": (
-                            "You are a professional translator specialized in Japanese to **Traditional Chinese (繁體中文)** translation. "
+                            "You are a professional translator specialized in Detected Language to **Traditional Chinese (繁體中文)** translation. "
                             "Your translations must **exclusively use Traditional Chinese characters** (e.g., 「繁體中文」, not 「简体中文」).\n\n"
                             "### Rules:\n"
                             "1. Preserve original formatting, punctuation, and line breaks.\n"
@@ -90,8 +97,8 @@ class Translator:
                     },
                     {
                         "role": "user", 
-                        "content": f"Translate the following Japanese text to **Traditional Chinese (繁體中文)**:\n{combined_text}\n\n"
-                                "**Reminder**: Use **only** Traditional Chinese characters and maintain original formatting."
+                        "content": f"Translate the following Detected Language text to **Traditional Chinese (繁體中文)**:\n{combined_text}\n\n"
+                                   "**Reminder**: Use **only** Traditional Chinese characters and maintain original formatting."
                     }
                 ],
                 temperature=0.3
@@ -112,7 +119,7 @@ class Translator:
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             prompt = (
-                "Translate the following Japanese texts to **Traditional Chinese (繁體中文)**:\n\n"
+                "Translate the following Detected Language texts to **Traditional Chinese (繁體中文)**:\n\n"
                 "===SPLIT===\n\n"
                 "**Important Requirements**:\n"
                 "- Use **exclusively Traditional Chinese characters** (e.g., 「圖」 not 「图」).\n"
@@ -127,11 +134,11 @@ class Translator:
             try:
                 response = self.client.chat.completions.create(
                     model=self.model,
-                    messages = [
+                    messages=[
                         {
                             "role": "system",
                             "content": (
-                                "You are a professional translator specialized in Japanese to **Traditional Chinese**.\n"
+                                "You are a professional translator specialized in Detected Language to **Traditional Chinese**.\n"
                                 "### Key Rules:\n"
                                 "1. **Always** output in Traditional Chinese (繁體中文).\n"
                                 "2. Reject any Simplified Chinese characters.\n"
@@ -312,29 +319,18 @@ class Update_Xhtml_Manager:
             return False
     
     def get_xhtml_files(self):
-        """Get all XHTML files matching the pattern p-[0-9]*.xhtml and sort them numerically."""
-        if self.platform == 'kobo':
-            self.xhtml_files = sorted(
-                glob.glob(os.path.join(self.input_dir, "p-[0-9]*.xhtml")), 
-                key=self._get_file_number
-            )
-            return len(self.xhtml_files)
-        elif self.platform == 'kindle':
-            self.xhtml_files = sorted(
-                glob.glob(os.path.join(self.input_dir, "part[0-9]*.xhtml")), 
-                key=self._get_file_number
-            )
-            return len(self.xhtml_files)
-    
-    def _get_file_number(self, filename):
-        if self.platform == 'kobo':
-            """Custom sorting key for numerical order."""
-            match = re.search(r'p-(\d+)\.xhtml', os.path.basename(filename))
-            return int(match.group(1)) if match else float('inf')
-        elif self.platform == 'kindle':
-            """Custom sorting key for numerical order."""
-            match = re.search(r'part(\d+)\.xhtml', os.path.basename(filename))
-            return int(match.group(1)) if match else float('inf')
+        """Get all XHTML files and sort them numerically."""
+        target_folder = 'xhtml' if self.platform == 'kobo' else 'OEBPS'
+        xhtml_dir = find_subfolder_path(os.path.join(self.base_dir, "extracted_epub"), target_folder)
+        if not xhtml_dir or not os.path.exists(xhtml_dir):
+            print(f"Error: XHTML directory {xhtml_dir or target_folder} not found.")
+            return 0
+        
+        self.xhtml_files = sorted(
+            glob.glob(os.path.join(xhtml_dir, "*.xhtml")), 
+            key=get_file_number
+        )
+        return len(self.xhtml_files)
     
     def update_xhtml_files(self):
         """Process each XHTML file and update with translations."""

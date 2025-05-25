@@ -13,6 +13,15 @@ import file_manager
 import text_extractor
 import translator
 import time
+import traceback
+from file_manager import find_subfolder_path
+
+def get_base_path():
+    """Return the base path for the application (handles PyInstaller bundle)."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    else:
+        return os.getcwd()
 
 class StreamRedirector:
     """Redirects stdout and stderr to the ScrolledText widget with buffered updates."""
@@ -26,26 +35,39 @@ class StreamRedirector:
 
     def write(self, text):
         self.text_buffer.append(text)
-        self.original_stream.write(text)
+        if self.original_stream is not None and hasattr(self.original_stream, 'write'):
+            try:
+                self.original_stream.write(text)
+            except Exception:
+                pass
         self.buffer.write(text)
 
     def _update_text(self):
         if self.text_buffer:
             combined_text = ''.join(self.text_buffer)
-            self.text_buffer = []  # Clear buffer
-            self.text_widget.config(state='normal')
-            self.text_widget.insert(tk.END, combined_text)
-            self.text_widget.yview(tk.END)
-            self.text_widget.config(state='disabled')
-        # Reschedule the update
+            self.text_buffer = []
+            try:
+                self.text_widget.config(state='normal')
+                self.text_widget.insert(tk.END, combined_text)
+                self.text_widget.yview(tk.END)
+                self.text_widget.config(state='disabled')
+            except Exception:
+                pass
         self._schedule_update()
 
     def _schedule_update(self):
-        self.text_widget.after(self.update_interval, self._update_text)
+        try:
+            self.text_widget.after(self.update_interval, self._update_text)
+        except Exception:
+            pass
 
     def flush(self):
         self.buffer.flush()
-        self.original_stream.flush()
+        if self.original_stream is not None and hasattr(self.original_stream, 'flush'):
+            try:
+                self.original_stream.flush()
+            except Exception:
+                pass
 
 class TranslationApp:
     def __init__(self, root):
@@ -53,79 +75,69 @@ class TranslationApp:
         self.root.title("EPUB Translator")
         self.root.geometry("600x500")
         self.root.attributes('-topmost', False)
-        self.is_translating = False  # Flag to track translation state
+        self.is_translating = False
         
-        # Create main frame
+        self.base_dir = get_base_path()
+        self.output_dir = os.path.join(self.base_dir, "output")
+        self.temp_dir = os.path.join(self.base_dir, "temp")
+        self.credential_dir = os.path.join(self.base_dir, "credential")
+        
         self.main_frame = ttk.Frame(self.root, padding="10")
         self.main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
-        # File selection
         ttk.Label(self.main_frame, text="EPUB File:").grid(row=0, column=0, sticky=tk.W, pady=5)
         self.file_entry = ttk.Entry(self.main_frame, width=50)
         self.file_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), pady=5)
         ttk.Button(self.main_frame, text="Browse", command=self.browse_file).grid(row=0, column=2, padx=5)
         
-        # Platform selection
         ttk.Label(self.main_frame, text="Platform:").grid(row=1, column=0, sticky=tk.W, pady=5)
         self.platform_var = tk.StringVar(value="kindle")
         self.platform_menu = ttk.Combobox(self.main_frame, textvariable=self.platform_var, values=["kindle", "kobo"], state="readonly", width=47)
         self.platform_menu.grid(row=1, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
-        # API URL
         ttk.Label(self.main_frame, text="API URL:").grid(row=2, column=0, sticky=tk.W, pady=5)
         self.api_url_entry = ttk.Entry(self.main_frame, width=50)
         self.api_url_entry.grid(row=2, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
-        # API Key
         ttk.Label(self.main_frame, text="API Key:").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.api_key_entry = ttk.Entry(self.main_frame, width=50)
         self.api_key_entry.grid(row=3, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
-        # Model selection
         ttk.Label(self.main_frame, text="Model:").grid(row=4, column=0, sticky=tk.W, pady=5)
         self.model_entry = ttk.Entry(self.main_frame, width=50)
         self.model_entry.grid(row=4, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
-        # Load saved credentials
         self.load_credentials()
         
-        # Buttons
         self.translate_button = ttk.Button(self.main_frame, text="Translate", command=self.translate)
         self.translate_button.grid(row=5, column=1, pady=10)
         ttk.Button(self.main_frame, text="Start New Book", command=self.clear_temp).grid(row=5, column=2, pady=10)
         ttk.Button(self.main_frame, text="Focus Window", command=self.focus_window).grid(row=5, column=0, pady=10)
         ttk.Button(self.main_frame, text="Reveal Output", command=self.reveal_output).grid(row=6, column=1, pady=10)
         
-        # Log display
         ttk.Label(self.main_frame, text="Log:").grid(row=7, column=0, sticky=tk.W, pady=5)
         self.log_text = scrolledtext.ScrolledText(self.main_frame, width=60, height=15, wrap=tk.WORD)
         self.log_text.grid(row=8, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.log_text.config(state='disabled')
         
-        # Configure grid weights
         self.main_frame.columnconfigure(1, weight=1)
         self.main_frame.rowconfigure(8, weight=1)
         
-        # Create output and temp directories
-        os.makedirs("output", exist_ok=True)
-        os.makedirs("temp", exist_ok=True)
-        os.makedirs("credential", exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.temp_dir, exist_ok=True)
+        os.makedirs(self.credential_dir, exist_ok=True)
         
-        # Redirect stdout and stderr
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
         sys.stdout = StreamRedirector(self.log_text, self.original_stdout)
         sys.stderr = StreamRedirector(self.log_text, self.original_stderr)
         
-        # Redirect warnings to stderr
         warnings.showwarning = self.redirect_warning
         
-        # Start responsiveness check
         self.root.after(1000, self._check_responsiveness)
 
     def load_credentials(self):
-        """Load credentials from credential.json if it exists."""
-        credential_file = os.path.join("credential", "credential.json")
+        credential_file = os.path.join(self.credential_dir, "credential.json")
         try:
             if os.path.exists(credential_file):
                 with open(credential_file, 'r') as f:
@@ -145,8 +157,7 @@ class TranslationApp:
             self.model_entry.insert(0, "Replace by your model")
 
     def save_credentials(self, api_url, api_key, model):
-        """Save credentials to credential.json."""
-        credential_file = os.path.join("credential", "credential.json")
+        credential_file = os.path.join(self.credential_dir, "credential.json")
         credentials = {
             'api_url': api_url,
             'api_key': api_key,
@@ -160,78 +171,93 @@ class TranslationApp:
             self.write(f"Error saving credentials: {e}\n")
 
     def redirect_warning(self, message, category, filename, lineno, file=None, line=None):
-        """Redirect warnings to stderr."""
         if file is None:
             file = sys.stderr
-        file.write(f"{category.__name__}: {message} ({filename}:{lineno})\n")
-        
+        if file is not None and hasattr(file, 'write'):
+            file.write(f"{category.__name__}: {message} ({filename}:{lineno})\n")
+
     def focus_window(self):
-        """Bring the window to the front."""
-        self.root.lift()
-        self.root.focus_set()
-        
-    def browse_file(self):
-        """Open file dialog to select EPUB file."""
-        file_path = filedialog.askopenfilename(filetypes=[("EPUB files", "*.epub")])
-        if file_path:
-            self.file_entry.delete(0, tk.END)
-            self.file_entry.insert(0, file_path)
-            
-    def clear_temp(self):
-        """Clear all files in the temp folder."""
-        temp_dir = "temp"
         try:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-                os.makedirs(temp_dir)
+            self.root.lift()
+            self.root.focus_set()
+        except Exception:
+            pass
+
+    def browse_file(self):
+        try:
+            file_path = filedialog.askopenfilename(filetypes=[("EPUB files", "*.epub")])
+            if file_path:
+                self.file_entry.delete(0, tk.END)
+                self.file_entry.insert(0, file_path)
+        except Exception as e:
+            self.write(f"Error selecting file: {e}\n")
+
+    def clear_temp(self):
+        try:
+            if os.path.exists(self.temp_dir):
+                shutil.rmtree(self.temp_dir)
+                os.makedirs(self.temp_dir)
                 self.write("Temp folder cleared successfully.\n")
             else:
                 self.write("Temp folder does not exist, created new one.\n")
-                os.makedirs(temp_dir)
+                os.makedirs(self.temp_dir)
         except Exception as e:
             self.write(f"Error clearing temp folder: {e}\n")
-            
+
     def reveal_output(self):
-        """Open the output folder in the system's default file explorer."""
-        output_dir = os.path.abspath("output")
         try:
-            if not os.path.exists(output_dir):
-                os.makedirs(output_dir)
+            if not os.path.exists(self.output_dir):
+                os.makedirs(self.output_dir)
                 self.write("Output folder created.\n")
             
             if sys.platform.startswith('win'):
-                os.startfile(output_dir)
+                os.startfile(self.output_dir)
             elif sys.platform.startswith('darwin'):
-                subprocess.run(['open', output_dir], check=True)
+                subprocess.run(['open', self.output_dir], check=True)
             else:
-                subprocess.run(['xdg-open', output_dir], check=True)
+                subprocess.run(['xdg-open', self.output_dir], check=True)
             self.write("Output folder opened successfully.\n")
         except Exception as e:
             self.write(f"Error opening output folder: {e}\n")
-            
+
     def write(self, text):
-        """Write text to the log widget in the main thread."""
-        self.root.after(0, self._update_log, text)
-        
+        try:
+            self.root.after(0, self._update_log, text)
+        except Exception:
+            if sys.stderr is not None and hasattr(sys.stderr, 'write'):
+                sys.stderr.write(text)
+
     def _update_log(self, text):
-        """Update log widget with timestamped text."""
-        self.log_text.config(state='normal')
-        self.log_text.insert(tk.END, f"[{time.time()}] {text}")
-        self.log_text.yview(tk.END)
-        self.log_text.config(state='disabled')
-        self.original_stdout.write(text)
-        
+        try:
+            self.log_text.config(state='normal')
+            self.log_text.insert(tk.END, f"[{time.time()}] {text}")
+            self.log_text.yview(tk.END)
+            self.log_text.config(state='disabled')
+            if self.original_stdout is not None and hasattr(self.original_stdout, 'write'):
+                self.original_stdout.write(text)
+        except Exception:
+            if sys.stderr is not None and hasattr(sys.stderr, 'write'):
+                sys.stderr.write(text)
+
     def flush(self):
-        """Flush the output streams."""
-        self.original_stdout.flush()
-        self.original_stderr.flush()
-        
+        if self.original_stdout is not None and hasattr(self.original_stdout, 'flush'):
+            try:
+                self.original_stdout.flush()
+            except Exception:
+                pass
+        if self.original_stderr is not None and hasattr(self.original_stderr, 'flush'):
+            try:
+                self.original_stderr.flush()
+            except Exception:
+                pass
+
     def _check_responsiveness(self):
-        """Periodically check if the event loop is responsive."""
-        self.root.after(100, self._check_responsiveness)
-        
+        try:
+            self.root.after(100, self._check_responsiveness)
+        except Exception:
+            pass
+
     def translate(self):
-        """Run the translation process in a background thread."""
         if self.is_translating:
             self.write("Translation already in progress. Please wait.\n")
             return
@@ -257,29 +283,40 @@ class TranslationApp:
                     self.write("Error: Please select a platform.\n")
                     return
                 
-                # Save credentials
                 self.save_credentials(api_url, api_key, model)
                 
                 self.write("Starting EPUB processing...\n")
-                extract_dir = "extracted_epub"
+                extract_dir = os.path.join(self.base_dir, "extracted_epub")
                 base_name_epub = os.path.basename(epub_path)
-                output_epub = f'output/{base_name_epub}'
-                trans_epub = 'extracted_epub'
-                translation_json = 'temp/updated_translations.json'
+                output_epub = os.path.join(self.output_dir, base_name_epub)
+                trans_epub = extract_dir
+                translation_json = os.path.join(self.temp_dir, 'updated_translations.json')
                 
-                # Set input_dir based on platform
-                if platform == 'kobo':
-                    input_dir = 'extracted_epub/item/xhtml'
-                elif platform == 'kindle':
-                    input_dir = 'extracted_epub/OEBPS'
-                else:
-                    self.write("Error: Invalid platform selected.\n")
+                # Extract EPUB first
+                self.write("Extracting EPUB...\n")
+                try:
+                    file_manager.file_manager(epub_path, extract_dir)
+                except Exception as e:
+                    self.write(f"Failed to extract EPUB: {str(e)}\n")
+                    self.write(traceback.format_exc() + "\n")
                     return
                 
-                output_file = 'temp/extracted_text.txt'
+                # Dynamically find the appropriate subfolder
+                target_folder = 'xhtml' if platform == 'kobo' else 'OEBPS'
+                input_dir = find_subfolder_path(extract_dir, target_folder)
                 
-                self.write("Extracting EPUB...\n")
-                file_manager.file_manager(epub_path, extract_dir)
+                # Fallback to the other folder if the target is not found
+                if not input_dir or not os.path.exists(input_dir):
+                    fallback_folder = 'OEBPS' if platform == 'kobo' else 'xhtml'
+                    input_dir = find_subfolder_path(extract_dir, fallback_folder)
+                    if input_dir and os.path.exists(input_dir):
+                        self.write(f"Warning: Expected '{target_folder}' folder not found. Using '{fallback_folder}' instead.\n")
+                    else:
+                        self.write(f"Error: Neither '{target_folder}' nor '{fallback_folder}' directory found in extracted_epub.\n")
+                        return
+                
+                output_file = os.path.join(self.temp_dir, 'extracted_text.txt')
+                
                 self.write("Running EPUB processor...\n")
                 epub_processor.ebook_processor(platform)
                 self.write("Extracting text...\n")
@@ -292,7 +329,8 @@ class TranslationApp:
                 self.write("Translation completed successfully!\n")
                 
             except Exception as e:
-                self.write(f"Error during translation: {e}\n")
+                self.write(f"Error during translation: {str(e)}\n")
+                self.write(traceback.format_exc() + "\n")
             finally:
                 self.root.after(0, lambda: self.translate_button.config(state='normal'))
                 self.root.after(0, self.focus_window)
@@ -301,9 +339,21 @@ class TranslationApp:
         threading.Thread(target=run_translation, daemon=True).start()
 
 def main():
-    root = tk.Tk()
-    app = TranslationApp(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        app = TranslationApp(root)
+        root.mainloop()
+    except Exception as e:
+        error_msg = f"Failed to start application: {e}\n"
+        if sys.stderr is not None and hasattr(sys.stderr, 'write'):
+            sys.stderr.write(error_msg)
+        else:
+            base_dir = get_base_path()
+            log_file = os.path.join(base_dir, "error.log")
+            os.makedirs(base_dir, exist_ok=True)
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(f"[{time.time()}] {error_msg}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

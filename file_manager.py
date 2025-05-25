@@ -3,6 +3,7 @@ import os
 import shutil
 from pathlib import Path
 import sys
+import re
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""
@@ -10,6 +11,13 @@ def get_base_path():
         return os.path.dirname(sys.executable)
     else:
         return os.getcwd()
+
+def find_subfolder_path(root_folder, target_folder):
+    """Search for a subfolder within root_folder and return its path."""
+    for root, dirs, _ in os.walk(root_folder):
+        if target_folder in dirs:
+            return os.path.join(root, target_folder)
+    return None
 
 class FileManager:
     def __init__(self, epub_path, extract_dir):

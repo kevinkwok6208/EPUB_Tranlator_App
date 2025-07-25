@@ -30,6 +30,7 @@ class TextAnalyzer:
         )
         self.japanese_specific_pattern = re.compile(r'[ぁ-んァ-ン]')
         self.english_pattern = re.compile(r'[a-zA-Z]')  # Basic English detection
+        self.punctuation_only_pattern = re.compile(r'^[「」…―\s]+$')  # Detects punctuation-only strings
 
     def is_japanese(self, text: str) -> bool:
         """Check if text contains Japanese characters"""
@@ -42,6 +43,10 @@ class TextAnalyzer:
     def is_untranslated(self, ch_text: str) -> bool:
         """Check if text contains Japanese-specific characters (for JSON validation)"""
         return bool(self.japanese_specific_pattern.search(ch_text))
+
+    def is_punctuation_only(self, text: str) -> bool:
+        """Check if text consists only of punctuation or whitespace"""
+        return bool(self.punctuation_only_pattern.match(text))
 
 class TranslationCache:
     """Manages caching of translations"""
@@ -77,12 +82,97 @@ class Translator:
         self.client = OpenAI(base_url=api_url, api_key=api_key)
         self.model = model
 
-    def batch_translate_for_file(self, texts: List[str], cache: TranslationCache) -> List[str]:
-        """Translate multiple texts for file processing"""
+    def batch_translate_for_json(self, texts: List[str], cache: TranslationCache, batch_size: int = 5) -> Dict[str, str]:
+        """Translate a batch of texts to Traditional Chinese, expecting newline-separated response."""
+        translations = {}
         if not texts:
-            return []
+            return translations
 
-        combined_text = "\n===SPLIT===\n".join(texts)
+        # Check cache first
+        uncached_texts = [text for text in texts if not cache.get(text)]
+        if not uncached_texts:
+            return {text: cache.get(text) for text in texts}
+
+        prompt = (
+            "Translate the following texts to **Traditional Chinese (繁體中文)**. "
+            "Each translation must be separated by a newline (\\n). "
+            "Maintain the exact order of the input texts.\n\n"
+            "### Rules:\n"
+            "1. Use **exclusively Traditional Chinese characters** (e.g., 「圖」 not 「图」).\n"
+            "2. Never use Simplified Chinese characters.\n"
+            "3. Preserve original formatting, punctuation, and line breaks within each text.\n"
+            "4. Localize names/titles appropriately for Traditional Chinese audiences.\n"
+            "5. If the text is already in Chinese, verify it's Traditional Chinese or convert it.\n\n"
+            "Input texts (in order):\n"
+        )
+
+        for idx, text in enumerate(uncached_texts, 1):
+            prompt += f"{idx}. {text}\n"
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a professional translator specialized in translating from any language to **Traditional Chinese**.\n"
+                            "### Key Rules:\n"
+                            "1. **Always** output in Traditional Chinese (繁體中文).\n"
+                            "2. Reject any Simplified Chinese characters.\n"
+                            "3. Maintain original formatting, including spaces and punctuation within each text.\n"
+                            "4. Localize terms appropriately (e.g., 'software' → '軟體', not '软件').\n"
+                            "5. Output translations in the exact order of input, separated by newlines (\\n).\n"
+                            "6. If the text is already Chinese, verify it's Traditional or convert it."
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.3
+            )
+
+            # Split the response by newlines, accounting for potential extra newlines
+            translation_text = response.choices[0].message.content
+            translated_lines = [line.strip() for line in translation_text.split('\n') if line.strip()]
+            
+            # Remove numbered prefixes (e.g., "1. ", "2. ") if present
+            cleaned_translations = []
+            for line in translated_lines:
+                if re.match(r'^\d+\.', line):
+                    cleaned_translations.append(re.sub(r'^\d+\.\s*', '', line))
+                else:
+                    cleaned_translations.append(line)
+
+            # Ensure the number of translations matches the input
+            if len(cleaned_translations) != len(uncached_texts):
+                print(f"Warning: Expected {len(uncached_texts)} translations, got {len(cleaned_translations)}. Using original texts for mismatches.")
+                for text in uncached_texts:
+                    translations[text] = text  # Fallback to original text
+            else:
+                for original, translated in zip(uncached_texts, cleaned_translations):
+                    translations[original] = translated
+                    cache.set(original, translated)
+
+            # Add cached translations for texts that were already cached
+            for text in texts:
+                if text not in translations:
+                    translations[text] = cache.get(text)
+
+            return translations
+        except Exception as e:
+            print(f"Batch translation error: {e}")
+            return {text: text for text in texts}  # Fallback to original texts
+
+    def translate_single(self, text: str, cache: TranslationCache) -> str:
+        """Translate a single text to Traditional Chinese."""
+        # Check cache first
+        cached_translation = cache.get(text)
+        if cached_translation:
+            return cached_translation
+
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -96,141 +186,23 @@ class Translator:
                             "1. Preserve original formatting, punctuation, and line breaks.\n"
                             "2. Localize names/titles appropriately for Traditional Chinese audiences.\n"
                             "3. **Never** use Simplified Chinese characters.\n"
-                            "4. Separate translations with ===SPLIT===.\n\n"
-                            "If the input is already in Chinese, confirm it's Traditional Chinese or convert it."
+                            "4. If the input is already in Chinese, confirm it's Traditional Chinese or convert it."
                         )
                     },
                     {
-                        "role": "user", 
-                        "content": f"Translate the following text to **Traditional Chinese (繁體中文)**:\n{combined_text}\n\n"
+                        "role": "user",
+                        "content": f"Translate the following text to **Traditional Chinese (繁體中文)**:\n{text}\n\n"
                                    "**Reminder**: Use **only** Traditional Chinese characters and maintain original formatting."
                     }
                 ],
                 temperature=0.3
             )
-            
-            translations = response.choices[0].message.content.split("===SPLIT===")
-            translations = [t.strip() for t in translations]
-            for original, translated in zip(texts, translations):
-                cache.set(original, translated)
-            return translations
+            translation = response.choices[0].message.content.strip()
+            cache.set(text, translation)
+            return translation
         except Exception as e:
-            print(f"Translation error: {e}")
-            return texts
-
-    def batch_translate_for_json(self, texts: List[str], batch_size: int = 5) -> Dict[str, str]:
-        """Translate texts for JSON processing"""
-        translations = {}
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            prompt = (
-                "Translate the following texts to **Traditional Chinese (繁體中文)**:\n\n"
-                "===SPLIT===\n\n"
-                "**Important Requirements**:\n"
-                "- Use **exclusively Traditional Chinese characters** (e.g., 「圖」 not 「图」).\n"
-                "- Never simplify characters (e.g., 「體」 not 「体」).\n"
-                "- Preserve original formatting, punctuation, and line breaks.\n"
-                "- Separate translations with ===SPLIT===."
-            )
-
-            for idx, text in enumerate(batch, 1):
-                prompt += f"{idx}. {text}\n"
-
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a professional translator specialized in translating from any language to **Traditional Chinese**.\n"
-                                "### Key Rules:\n"
-                                "1. **Always** output in Traditional Chinese (繁體中文).\n"
-                                "2. Reject any Simplified Chinese characters.\n"
-                                "3. Maintain original formatting, including spaces and line breaks.\n"
-                                "4. Localize terms appropriately (e.g., 'software' → '軟體', not '软件').\n"
-                                "5. If the text is already Chinese, verify it's Traditional or convert it."
-                            )
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
-                )
-
-                translation_text = response.choices[0].message.content
-                lines = translation_text.split('\n')
-                for line in lines:
-                    if re.match(r'^\d+\.', line):
-                        parts = line.split('.', 1)
-                        if len(parts) > 1:
-                            idx = int(parts[0]) - 1
-                            if idx < len(batch):
-                                translations[batch[idx]] = parts[1].strip()
-            except Exception as e:
-                print(f"Error in batch translation: {e}")
-                continue
-        return translations
-
-class FileProcessor:
-    """Manages text file processing and translation"""
-    
-    def __init__(self, input_path: str, output_path: str, batch_size: int = 50):
-        self.base_dir = get_base_path()
-        self.input_path = os.path.join(self.base_dir, input_path)
-        self.output_path = os.path.join(self.base_dir, output_path)
-        self.batch_size = batch_size
-        self.cache = TranslationCache()
-        self.text_analyzer = TextAnalyzer()
-
-    def read_paragraphs(self) -> List[str]:
-        with open(self.input_path, 'r', encoding='utf-8') as file:
-            return [line.strip() for line in file.read().splitlines() if line.strip()]
-
-    def write_paragraphs(self, paragraphs: List[str]):
-        os.makedirs(os.path.dirname(self.output_path), exist_ok=True)
-        with open(self.output_path, 'w', encoding='utf-8') as file:
-            file.write('\n'.join(paragraphs))
-
-    def process(self, translator: Translator):
-        try:
-            paragraphs = self.read_paragraphs()
-            translated_paragraphs = []
-            current_batch = []
-            total_paragraphs = len(paragraphs)
-
-            for i, paragraph in enumerate(paragraphs, 1):
-                if i % 50 == 0:
-                    print(f"Processing paragraph {i} of {total_paragraphs} ({(i/total_paragraphs)*100:.2f}%)")
-
-                cached_translation = self.cache.get(paragraph)
-                if cached_translation:
-                    translated_paragraphs.append(cached_translation)
-                    continue
-
-                if self.text_analyzer.is_japanese(paragraph) or self.text_analyzer.is_english(paragraph):
-                    current_batch.append(paragraph)
-                else:
-                    translated_paragraphs.append(paragraph)
-                    continue
-
-                if len(current_batch) >= self.batch_size:
-                    print(f"Translating batch of {len(current_batch)} paragraphs...")
-                    translations = translator.batch_translate_for_file(current_batch, self.cache)
-                    translated_paragraphs.extend(translations)
-                    current_batch = []
-
-            if current_batch:
-                print(f"Translating final batch of {len(current_batch)} paragraphs...")
-                translations = translator.batch_translate_for_file(current_batch, self.cache)
-                translated_paragraphs.extend(translations)
-
-            self.write_paragraphs(translated_paragraphs)
-            print(f"Translation completed. Output saved to: {self.output_path}")
-            print(f"Total paragraphs processed: {len(translated_paragraphs)}")
-        except Exception as e:
-            print(f"Error processing file: {e}")
+            print(f"Translation error for '{text}': {e}")
+            return text
 
 class JsonProcessor:
     """Handles JSON file operations and translation updates"""
@@ -257,63 +229,81 @@ class JsonProcessor:
         with open(self.output_file, 'w', encoding='utf-8') as f:
             json.dump(json_data, f, ensure_ascii=False, indent=2)
 
-    def find_untranslated(self, json_data: Dict[str, str]) -> List[str]:
+    def find_untranslated(self, json_data: Dict[str, str], check_japanese: bool = False) -> List[str]:
         untranslated = []
         for jp_text, ch_text in json_data.items():
-            if not jp_text or not ch_text:
+            if not jp_text:  # Skip empty keys
                 continue
-            if self.text_analyzer.is_untranslated(ch_text) or jp_text == ch_text:
-                untranslated.append(jp_text)
+            if check_japanese:
+                # After batch translation: Check for empty values or Japanese characters in translated text
+                if ch_text == "" or self.text_analyzer.is_japanese(ch_text):
+                    if not self.text_analyzer.is_punctuation_only(jp_text):  # Exclude punctuation-only strings
+                        untranslated.append(jp_text)
+                        print(f"Detected untranslated: '{jp_text}' (Reason: {'Empty value' if ch_text == '' else 'Contains Japanese characters'})")
+                    else:
+                        print(f"Skipping punctuation-only text: '{jp_text}'")
+                else:
+                    print(f"Skipping valid translation: '{jp_text}' -> '{ch_text}'")
+            else:
+                # Initial check: Only look for empty values
+                if ch_text == "":  # Untranslated if value is empty string
+                    if not self.text_analyzer.is_punctuation_only(jp_text):  # Exclude punctuation-only strings
+                        untranslated.append(jp_text)
+                        print(f"Detected untranslated: '{jp_text}'")
+                    else:
+                        print(f"Skipping punctuation-only text: '{jp_text}'")
+                else:
+                    print(f"Skipping already translated: '{jp_text}' -> '{ch_text}'")
         return untranslated
 
-    def update_json(self, original_json: Dict[str, str], new_translations: Dict[str, str]) -> Dict[str, str]:
-        updated_json = original_json.copy()
-        for jp_text, ch_translation in new_translations.items():
-            if jp_text in updated_json:
-                updated_json[jp_text] = ch_translation
-        return updated_json
-
-    def process(self, translator: Translator):
+    def process(self, translator: Translator, batch_size: int = 5):
         for cache_file in self.cache_files:
             print(f"Processing cache file: {cache_file}")
             json_data = self.load_json(cache_file)
             untranslated = self.find_untranslated(json_data)
 
             if not untranslated:
-                print("All entries are properly translated!")
+                print("All entries are properly translated or skipped!")
+                self.save_json(json_data)  # Save to output even if no translations needed
                 continue
 
             print(f"Found {len(untranslated)} untranslated entries.")
-            new_translations = translator.batch_translate_for_json(untranslated)
-            updated_json = self.update_json(json_data, new_translations)
+            updated_json = json_data.copy()
+            cache = TranslationCache(cache_file)
+            total_untranslated = len(untranslated)
+
+            # Step 1: Batch translation
+            for i in range(0, len(untranslated), batch_size):
+                batch = untranslated[i:i + batch_size]
+                print(f"Batch translating batch {i // batch_size + 1} of {((len(untranslated) - 1) // batch_size + 1)} "
+                      f"({len(batch)} entries, {((i + len(batch)) / total_untranslated * 100):.2f}% complete)")
+                translations = translator.batch_translate_for_json(batch, cache, batch_size)
+                for text, translation in translations.items():
+                    updated_json[text] = translation
+
+            # Step 2: Check for remaining untranslated entries (empty or containing Japanese)
+            remaining_untranslated = self.find_untranslated(updated_json, check_japanese=True)
+            if remaining_untranslated:
+                print(f"Found {len(remaining_untranslated)} entries still untranslated after batch translation. Switching to line-by-line translation.")
+                for i, text in enumerate(remaining_untranslated, 1):
+                    print(f"Translating entry {i} of {len(remaining_untranslated)} ({(i / len(remaining_untranslated) * 100):.2f}% complete)")
+                    translation = translator.translate_single(text, cache)
+                    updated_json[text] = translation
+
             self.save_json(updated_json)
-            print(f"Updated {len(new_translations)} translations and saved to '{self.output_file}'")
+            print(f"Updated {len(untranslated)} translations and saved to '{self.output_file}'")
 
 class TranslationManager:
-    """Coordinates text file and JSON translation processes"""
+    """Coordinates JSON translation processes"""
     
-    def __init__(self, api_url: str, api_key: str, model: str, input_file: str, output_file: str, cache_files: List[str]):
+    def __init__(self, api_url: str, api_key: str, model: str, cache_files: List[str]):
         self.translator = Translator(api_url, api_key, model)
-        self.file_processor = FileProcessor(input_file, output_file)
         self.json_processor = JsonProcessor(cache_files)
         self.text_analyzer = TextAnalyzer()
 
     def process_all(self):
-        """Run both file and JSON processing"""
-        print("Starting text file translation...")
-        self.file_processor.process(self.translator)
-        
-        # Check if any translatable text (Japanese or English) was found
-        try:
-            with open(self.file_processor.input_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-                if not (self.text_analyzer.is_japanese(content) or self.text_analyzer.is_english(content)):
-                    print("No Japanese or English text detected. Skipping JSON translation update.")
-                    return
-        except Exception as e:
-            print(f"Error checking input file: {e}")
-        
-        print("\nStarting JSON translation update...")
+        """Run JSON processing"""
+        print("Starting JSON translation update...")
         self.json_processor.process(self.translator)
 
 class Update_Xhtml_Manager:
@@ -424,8 +414,6 @@ class Update_Xhtml_Manager:
 def gpt_translation(api_url, api_key, model, platform, input_dir, translation_json):
     # Configuration
     base_dir = get_base_path()
-    input_file = os.path.join(base_dir, 'temp', 'extracted_text.txt')
-    output_file = os.path.join(base_dir, 'temp', 'output.txt')
     cache_files = [
         os.path.join(base_dir, 'temp', 'translation_cache.json'),
         os.path.join(base_dir, 'temp', 'updated_translations.json')
@@ -437,7 +425,7 @@ def gpt_translation(api_url, api_key, model, platform, input_dir, translation_js
     os.makedirs(os.path.join(base_dir, 'temp'), exist_ok=True)
 
     # Initialize and run the manager
-    manager = TranslationManager(api_url, api_key, model, input_file, output_file, cache_files)
+    manager = TranslationManager(api_url, api_key, model, cache_files)
     manager.process_all()
 
     xhtml_updator = Update_Xhtml_Manager(input_dir=input_dir, translations_file=translation_json, platform=platform)

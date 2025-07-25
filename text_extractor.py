@@ -1,6 +1,7 @@
 import os
 import glob
 import re
+import json
 from bs4 import BeautifulSoup
 import sys
 from file_manager import find_subfolder_path
@@ -19,11 +20,13 @@ def get_file_number(filename):
     return int(match.group(1)) if match else float('inf')
 
 class TextExtractor:
-    def __init__(self, input_dir, output_file, platform):
+    def __init__(self, input_dir, output_file, platform, translation_file="temp/translation_cache.json"):
         self.input_dir = input_dir
         self.output_file = output_file
         self.platform = platform
         self.base_dir = get_base_path()
+        self.translation_file = os.path.join(self.base_dir, translation_file)
+        self.translations = {}
 
     def extract_text(self):
         output_file = os.path.join(self.base_dir, self.output_file)
@@ -102,3 +105,38 @@ class TextExtractor:
                 outfile.write("\n")
 
         print(f"Text extracted to {output_file}")
+
+    def generate_translation_cache(self, text_file):
+        """Generate translation_cache.json from a text file with empty string values, unless it already exists."""
+        # Check if translation_cache.json already exists
+        if os.path.exists(self.translation_file):
+            print(f"Translation cache already exists at {self.translation_file}. Keeping original file.")
+            return
+
+        # Initialize translations dictionary
+        self.translations = {}
+
+        # Read the text file to extract lines
+        text_file_path = os.path.join(self.base_dir, text_file)
+        if not os.path.exists(text_file_path):
+            print(f"Error: Text file {text_file_path} not found.")
+            return
+
+        with open(text_file_path, "r", encoding="utf-8") as infile:
+            lines = infile.readlines()
+            for line in lines:
+                line = line.strip()
+                if line:  # Only include non-empty lines
+                    self.translations[line] = ""
+
+        # Save translations to JSON file in temp/translation_cache.json
+        os.makedirs(os.path.dirname(self.translation_file), exist_ok=True)
+        with open(self.translation_file, "w", encoding="utf-8") as outfile:
+            json.dump(self.translations, outfile, ensure_ascii=False, indent=2)
+
+        print(f"Translation cache generated at {self.translation_file}")
+
+if __name__ == "__main__":
+    extractor = TextExtractor(input_dir="extracted_epub", output_file="output/extracted_text.txt", platform="kobo")
+    extractor.extract_text()
+    extractor.generate_translation_cache("input.txt")  # Assuming the provided text is in 'input.txt'

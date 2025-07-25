@@ -319,11 +319,12 @@ class TranslationApp:
                 
                 self.write("Running EPUB processor...\n")
                 epub_processor.ebook_processor(platform)
-                self.write("Extracting text...\n")
+                self.write("Extracting text and generating translation cache...\n")
                 te = text_extractor.TextExtractor(input_dir, output_file, platform)
                 te.extract_text()
-                self.write("Translating content...\n")
-                translator.gpt_translation(api_url=api_url, api_key=api_key, model=model, input_dir=input_dir, platform=platform, translation_json=translation_json)
+                te.generate_translation_cache(output_file)  # Generate translation_cache.json
+                self.write("Translating JSON content...\n")
+                translator.gpt_translation(api_url=api_url, api_key=api_key, model=model, platform=platform, input_dir=input_dir, translation_json=translation_json)
                 self.write("Creating translated EPUB...\n")
                 file_manager.create_epub(trans_epub, output_epub)
                 self.write("Translation completed successfully!\n")

@@ -304,7 +304,7 @@ class TranslationManager:
     def process_all(self):
         """Run JSON processing"""
         print("Starting JSON translation update...")
-        self.json_processor.process(self.translator)
+        self.json_processor.process(self.translator, batch_size=20) # Change here if you want change the number of lines per batch.
 
 class Update_Xhtml_Manager:
     def __init__(self, input_dir="", translations_file="", platform=''):

@@ -36,6 +36,10 @@ class TextAnalyzer:
         """Check if text contains Japanese characters"""
         return bool(self.japanese_pattern.search(text))
 
+    def is_japanese_specific(self, text: str) -> bool:
+        """Check if text contains Japanese-specific characters (hiragana/katakana)"""
+        return bool(self.japanese_specific_pattern.search(text))
+
     def is_english(self, text: str) -> bool:
         """Check if text contains English characters"""
         return bool(self.english_pattern.search(text))
@@ -81,6 +85,7 @@ class Translator:
     def __init__(self, api_url: str, api_key: str, model: str):
         self.client = OpenAI(base_url=api_url, api_key=api_key)
         self.model = model
+        self.text_analyzer = TextAnalyzer()
 
     def batch_translate_for_json(self, texts: List[str], cache: TranslationCache, batch_size: int = 5) -> Dict[str, str]:
         """Translate a batch of texts to Traditional Chinese, expecting newline-separated response."""
@@ -88,10 +93,23 @@ class Translator:
         if not texts:
             return translations
 
-        # Check cache first
-        uncached_texts = [text for text in texts if not cache.get(text)]
+        # Check cache first, but ignore invalid cached translations
+        uncached_texts = []
+        for text in texts:
+            cached_translation = cache.get(text)
+            if cached_translation:
+                # Skip cached translation if it contains Japanese characters or is identical to original
+                if self.text_analyzer.is_japanese_specific(cached_translation) or text == cached_translation:
+                    print(f"Ignoring invalid cached translation for '{text}': '{cached_translation}'")
+                    uncached_texts.append(text)
+                else:
+                    translations[text] = cached_translation
+                    print(f"Using cached translation for '{text}': '{cached_translation}'")
+            else:
+                uncached_texts.append(text)
+
         if not uncached_texts:
-            return {text: cache.get(text) for text in texts}
+            return translations
 
         prompt = (
             "Translate the following texts to **Traditional Chinese (繁體中文)**. "
@@ -155,11 +173,7 @@ class Translator:
                 for original, translated in zip(uncached_texts, cleaned_translations):
                     translations[original] = translated
                     cache.set(original, translated)
-
-            # Add cached translations for texts that were already cached
-            for text in texts:
-                if text not in translations:
-                    translations[text] = cache.get(text)
+                    print(f"Cached new translation for '{original}': '{translated}'")
 
             return translations
         except Exception as e:
@@ -171,7 +185,12 @@ class Translator:
         # Check cache first
         cached_translation = cache.get(text)
         if cached_translation:
-            return cached_translation
+            # Skip cached translation if it contains Japanese characters or is identical to original
+            if self.text_analyzer.is_japanese_specific(cached_translation) or text == cached_translation:
+                print(f"Ignoring invalid cached translation for '{text}': '{cached_translation}'")
+            else:
+                print(f"Using cached translation for '{text}': '{cached_translation}'")
+                return cached_translation
 
         try:
             response = self.client.chat.completions.create(
@@ -199,6 +218,7 @@ class Translator:
             )
             translation = response.choices[0].message.content.strip()
             cache.set(text, translation)
+            print(f"Cached new translation for '{text}': '{translation}'")
             return translation
         except Exception as e:
             print(f"Translation error for '{text}': {e}")
@@ -233,27 +253,46 @@ class JsonProcessor:
         untranslated = []
         for jp_text, ch_text in json_data.items():
             if not jp_text:  # Skip empty keys
+                print(f"Skipping empty key in JSON")
                 continue
             if check_japanese:
-                # After batch translation: Check for empty values or Japanese characters in translated text
-                if ch_text == "" or self.text_analyzer.is_japanese(ch_text):
-                    if not self.text_analyzer.is_punctuation_only(jp_text):  # Exclude punctuation-only strings
-                        untranslated.append(jp_text)
-                        print(f"Detected untranslated: '{jp_text}' (Reason: {'Empty value' if ch_text == '' else 'Contains Japanese characters'})")
+                # After batch translation: Check for empty values, Japanese-specific characters, or identical original/translated text
+                if (ch_text == "" or 
+                    self.text_analyzer.is_japanese_specific(ch_text) or 
+                    jp_text == ch_text):
+                    if self.text_analyzer.is_punctuation_only(jp_text):
+                        # For punctuation-only text, use original text as translation
+                        json_data[jp_text] = jp_text
+                        print(f"Filled punctuation-only text: '{jp_text}' -> '{jp_text}'")
                     else:
-                        print(f"Skipping punctuation-only text: '{jp_text}'")
+                        untranslated.append(jp_text)
+                        reason = (
+                            "Empty value" if ch_text == "" else
+                            "Contains Japanese-specific characters" if self.text_analyzer.is_japanese_specific(ch_text) else
+                            "Translated text identical to original"
+                        )
+                        print(f"Detected untranslated: '{jp_text}' (Reason: {reason})")
                 else:
                     print(f"Skipping valid translation: '{jp_text}' -> '{ch_text}'")
             else:
-                # Initial check: Only look for empty values
-                if ch_text == "":  # Untranslated if value is empty string
-                    if not self.text_analyzer.is_punctuation_only(jp_text):  # Exclude punctuation-only strings
-                        untranslated.append(jp_text)
-                        print(f"Detected untranslated: '{jp_text}'")
+                # Initial check: Check for empty values, Japanese-specific characters, or identical original/translated text
+                if (ch_text == "" or 
+                    self.text_analyzer.is_japanese_specific(ch_text) or 
+                    jp_text == ch_text):
+                    if self.text_analyzer.is_punctuation_only(jp_text):
+                        # For punctuation-only text, use original text as translation
+                        json_data[jp_text] = jp_text
+                        print(f"Filled punctuation-only text: '{jp_text}' -> '{jp_text}'")
                     else:
-                        print(f"Skipping punctuation-only text: '{jp_text}'")
+                        untranslated.append(jp_text)
+                        reason = (
+                            "Empty value" if ch_text == "" else
+                            "Contains Japanese-specific characters" if self.text_analyzer.is_japanese_specific(ch_text) else
+                            "Translated text identical to original"
+                        )
+                        print(f"Detected untranslated: '{jp_text}' (Reason: {reason})")
                 else:
-                    print(f"Skipping already translated: '{jp_text}' -> '{ch_text}'")
+                    print(f"Skipping valid translation: '{jp_text}' -> '{ch_text}'")
         return untranslated
 
     def process(self, translator: Translator, batch_size: int = 5):
@@ -263,7 +302,7 @@ class JsonProcessor:
             untranslated = self.find_untranslated(json_data)
 
             if not untranslated:
-                print("All entries are properly translated or skipped!")
+                print("All entries are properly translated or punctuation-only!")
                 self.save_json(json_data)  # Save to output even if no translations needed
                 continue
 
@@ -281,19 +320,19 @@ class JsonProcessor:
                 for text, translation in translations.items():
                     updated_json[text] = translation
 
-            # Step 2: Check for remaining untranslated entries (empty or containing Japanese)
+            # Step 2: Check for remaining untranslated entries (empty, Japanese-specific, or identical)
             remaining_untranslated = self.find_untranslated(updated_json, check_japanese=True)
             if remaining_untranslated:
                 print(f"Found {len(remaining_untranslated)} entries still untranslated after batch translation. Switching to line-by-line translation.")
                 for i, text in enumerate(remaining_untranslated, 1):
-                    print(f"Translating entry {i} of {len(remaining_untranslated)} ({(i / len(remaining_untranslated) * 100):.2f}% complete)")
+                    print(f"Processing entry {i} of {len(remaining_untranslated)} ({(i / len(remaining_untranslated) * 100):.2f}% complete)")
                     translation = translator.translate_single(text, cache)
                     updated_json[text] = translation
 
             self.save_json(updated_json)
-            print(f"Updated {len(untranslated)} translations and saved to '{self.output_file}'")
+            print(f"Translated {len(untranslated)} entries and saved to '{self.output_file}'")
 
-class TranslationManager:
+class TranslatorManager:
     """Coordinates JSON translation processes"""
     
     def __init__(self, api_url: str, api_key: str, model: str, cache_files: List[str]):
@@ -302,31 +341,33 @@ class TranslationManager:
         self.text_analyzer = TextAnalyzer()
 
     def process_all(self):
-        """Run JSON processing"""
-        print("Starting JSON translation update...")
-        self.json_processor.process(self.translator, batch_size=20) # Change here if you want change the number of lines per batch.
+        """Process all translation files"""
+        print("Starting JSON translation process...")
+        self.json_processor.process(self.translator, batch_size=20)
 
 class Update_Xhtml_Manager:
-    def __init__(self, input_dir="", translations_file="", platform=''):
+    def __init__(self, input_dir: str = "", translations_file: str = "", platform: str = ''):
         """
         Initialize the EbookTranslator with paths to input directory and translations file.
         
         Args:
             input_dir (str): Directory containing XHTML files
             translations_file (str): Path to translations JSON file
+            platform (str): Platform identifier (e.g., 'kobo')
         """
-        self.base_dir = get_base_path()
-        self.input_dir = os.path.join(self.base_dir, input_dir)
-        self.translations_file = os.path.join(self.base_dir, translations_file)
+        self.base_dir = Path(get_base_path())
+        self.input_dir = self.base_dir / input_dir
+        self.translations_file = self.base_dir / translations_file
         self.platform = platform
         self.translations = {}
         self.xhtml_files = []
-    
+
     def load_translations(self):
         """Load translations from JSON file."""
         try:
             with open(self.translations_file, "r", encoding="utf-8") as f:
                 self.translations = json.load(f)
+            print(f"Loaded {len(self.translations)} translations from '{self.translations_file}'")
             return True
         except Exception as e:
             print(f"Error loading translations: {e}")
@@ -344,6 +385,7 @@ class Update_Xhtml_Manager:
             glob.glob(os.path.join(xhtml_dir, "*.xhtml")), 
             key=get_file_number
         )
+        print(f"Found {len(self.xhtml_files)} XHTML files in '{xhtml_dir}'")
         return len(self.xhtml_files)
     
     def update_xhtml_files(self):
@@ -392,11 +434,13 @@ class Update_Xhtml_Manager:
             if changes_made:
                 with open(file_path, "w", encoding="utf-8") as outfile:
                     outfile.write(str(soup))
+                print(f"Updated XHTML file: '{file_path}'")
                 return True
             
+            print(f"No changes made to XHTML file: '{file_path}'")
             return False
         except Exception as e:
-            print(f"Error updating file {file_path}: {e}")
+            print(f"Error updating file '{file_path}': {e}")
             return False
     
     def run(self):
@@ -409,9 +453,10 @@ class Update_Xhtml_Manager:
             return "No XHTML files found."
         
         updated_count = self.update_xhtml_files()
-        return f"Updated {updated_count} of {file_count} XHTML files with translations from {self.translations_file}"
+        return f"Updated {updated_count} of {file_count} XHTML files with translations from '{self.translations_file}'"
         
-def gpt_translation(api_url, api_key, model, platform, input_dir, translation_json):
+def gpt_translation(api_url: str, api_key: str, model: str, platform: str, input_dir: str, translation_json: str):
+    """Main function to run the translation and XHTML update process."""
     # Configuration
     base_dir = get_base_path()
     cache_files = [
@@ -425,8 +470,9 @@ def gpt_translation(api_url, api_key, model, platform, input_dir, translation_js
     os.makedirs(os.path.join(base_dir, 'temp'), exist_ok=True)
 
     # Initialize and run the manager
-    manager = TranslationManager(api_url, api_key, model, cache_files)
+    manager = TranslatorManager(api_url, api_key, model, cache_files)
     manager.process_all()
 
     xhtml_updator = Update_Xhtml_Manager(input_dir=input_dir, translations_file=translation_json, platform=platform)
-    xhtml_updator.run()
+    result = xhtml_updator.run()
+    print(result)

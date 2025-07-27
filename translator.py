@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import sys
 from file_manager import find_subfolder_path
 from pathlib import Path
+from text_extractor import TextExtractor
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""
@@ -374,18 +375,38 @@ class Update_Xhtml_Manager:
             return False
     
     def get_xhtml_files(self):
-        """Get all XHTML files and sort them numerically."""
-        target_folder = 'xhtml' if self.platform == 'kobo' else 'OEBPS'
-        xhtml_dir = find_subfolder_path(os.path.join(self.base_dir, "extracted_epub"), target_folder)
-        if not xhtml_dir or not os.path.exists(xhtml_dir):
-            print(f"Error: XHTML directory {xhtml_dir or target_folder} not found.")
-            return 0
-        
-        self.xhtml_files = sorted(
-            glob.glob(os.path.join(xhtml_dir, "*.xhtml")), 
-            key=get_file_number
+        """
+        Get all XHTML files in spine order using TextExtractor.find_xhtml_files.
+        Returns the number of XHTML files found.
+        """
+        # Create a temporary TextExtractor instance to use its find_xhtml_files method
+        extractor = TextExtractor(
+            input_dir=str(self.input_dir),
+            output_file="dummy.txt",  # Dummy value, not used
+            platform=self.platform
         )
-        print(f"Found {len(self.xhtml_files)} XHTML files in '{xhtml_dir}'")
+        
+        # Call find_xhtml_files (expects string base_dir)
+        xhtml_folder, xhtml_files = extractor.find_xhtml_files()
+        
+        if not xhtml_folder or not xhtml_files:
+            # Fallback to original logic
+            print("Warning: No XHTML files found via metadata. Attempting fallback search.")
+            target_folder = 'xhtml' if self.platform == 'kobo' else 'OEBPS'
+            xhtml_dir = find_subfolder_path(str(self.base_dir / "extracted_epub"), target_folder)
+            if xhtml_dir and os.path.exists(xhtml_dir):
+                self.xhtml_files = sorted(
+                    glob.glob(os.path.join(xhtml_dir, "*.xhtml")),
+                    key=get_file_number
+                )
+                xhtml_folder = xhtml_dir
+            else:
+                print(f"Error: XHTML directory {xhtml_dir or target_folder} not found in fallback search.")
+                return 0
+        
+        # Convert Path objects to strings for compatibility with update_xhtml_files
+        self.xhtml_files = [str(file) for file in xhtml_files]
+        print(f"Found {len(self.xhtml_files)} XHTML files in '{xhtml_folder}'")
         return len(self.xhtml_files)
     
     def update_xhtml_files(self):

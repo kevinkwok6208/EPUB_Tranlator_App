@@ -1,11 +1,11 @@
 import os
-import glob
 import re
 import json
 from bs4 import BeautifulSoup
 import sys
 from file_manager import find_subfolder_path
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""
@@ -28,37 +28,104 @@ class TextExtractor:
         self.translation_file = os.path.join(self.base_dir, translation_file)
         self.translations = {}
 
+    def find_xhtml_files(self):
+        """
+        Locate the folder containing XHTML files and return a list of XHTML file paths in spine order.
+        Returns a tuple: (xhtml_folder, xhtml_files) or (None, None) if not found.
+        """
+        # Step 1: Parse container.xml to find the .opf file
+        container_path = os.path.join(self.base_dir, "extracted_epub", "META-INF", "container.xml")
+        if not os.path.exists(container_path):
+            print("Error: container.xml not found.")
+            return None, None
+
+        try:
+            tree = ET.parse(container_path)
+            root = tree.getroot()
+            namespace = {'ns': 'urn:oasis:names:tc:opendocument:xmlns:container'}
+            opf_path = root.find('.//ns:rootfile[@media-type="application/oebps-package+xml"]', namespace).attrib['full-path']
+        except (ET.ParseError, AttributeError) as e:
+            print(f"Error parsing container.xml: {e}")
+            return None, None
+
+        # Step 2: Parse the .opf file to find XHTML files
+        opf_full_path = os.path.join(self.base_dir, "extracted_epub", opf_path)
+        if not os.path.exists(opf_full_path):
+            print(f"Error: .opf file not found at {opf_full_path}")
+            return None, None
+
+        try:
+            tree = ET.parse(opf_full_path)
+            root = tree.getroot()
+            namespace = {'opf': 'http://www.idpf.org/2007/opf'}
+
+            # Get manifest (map id to href)
+            manifest = {}
+            for item in root.findall('.//opf:manifest/opf:item', namespace):
+                if item.attrib.get('media-type') == 'application/xhtml+xml':
+                    manifest[item.attrib['id']] = item.attrib['href']
+
+            # Get spine (reading order)
+            spine = [itemref.attrib['idref'] for itemref in root.findall('.//opf:spine/opf:itemref', namespace)]
+
+            # Build list of XHTML file paths in spine order
+            xhtml_files = []
+            content_dir = os.path.dirname(opf_path)  # e.g., 'OEBPS'
+            xhtml_folder = None
+            for idref in spine:
+                if idref in manifest:
+                    xhtml_path = manifest[idref]
+                    full_path = Path(self.base_dir) / "extracted_epub" / content_dir / xhtml_path
+                    if full_path.exists():
+                        xhtml_files.append(full_path)
+                        if xhtml_folder is None:
+                            xhtml_folder = str(full_path.parent)  # Set folder from first valid file
+                    else:
+                        print(f"Warning: XHTML file not found at {full_path}")
+
+            if not xhtml_files:
+                # Fallback to searching for XHTML files if spine parsing fails
+                print("Warning: No valid XHTML files found in manifest. Attempting fallback search.")
+                xhtml_dir = (find_subfolder_path(os.path.join(self.base_dir, "extracted_epub"), "Text") or
+                             find_subfolder_path(os.path.join(self.base_dir, "extracted_epub"), "xhtml") or
+                             find_subfolder_path(os.path.join(self.base_dir, "extracted_epub"), content_dir))
+                if xhtml_dir:
+                    xhtml_files = sorted(Path(xhtml_dir).glob("*.xhtml"), key=get_file_number)
+                    xhtml_folder = xhtml_dir
+                else:
+                    print("Error: No XHTML files found in fallback search.")
+                    return None, None
+
+            return xhtml_folder, xhtml_files
+        except (ET.ParseError, AttributeError) as e:
+            print(f"Error parsing .opf file: {e}")
+            return None, None
+
     def extract_text(self):
         output_file = os.path.join(self.base_dir, self.output_file)
         input_dir = os.path.join(self.base_dir, self.input_dir)
-        
-        # Dynamically find the appropriate subfolder
-        target_folder = 'xhtml' if self.platform == 'kobo' else 'OEBPS'
-        xhtml_dir = find_subfolder_path(os.path.join(self.base_dir, "extracted_epub"), target_folder)
-        if not xhtml_dir or not os.path.exists(xhtml_dir):
-            print(f"Error: XHTML directory {xhtml_dir or target_folder} not found.")
-            return
-        
-        # Find all XHTML files and sort by numerical order
-        xhtml_files = list(Path(xhtml_dir).glob("*.xhtml"))
-        xhtml_files = sorted(xhtml_files, key=get_file_number)
 
-        if not xhtml_files:
-            print(f"Warning: No XHTML files found in {xhtml_dir}.")
+        # Find XHTML folder and files using EPUB metadata
+        xhtml_dir, xhtml_files = self.find_xhtml_files()
+        if not xhtml_dir or not xhtml_files:
+            print(f"Error: XHTML directory or files not found.")
             return
+
+        print(f"Found XHTML directory: {xhtml_dir}")
+        print(f"Found {len(xhtml_files)} XHTML files.")
 
         # Open the output file to write the extracted text
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         with open(output_file, "w", encoding="utf-8") as outfile:
-            # Process each XHTML file
+            # Process each XHTML file in spine order
             for file_path in xhtml_files:
                 # Read the XHTML file
                 with open(file_path, "r", encoding="utf-8") as infile:
                     content = infile.read()
-                
+
                 # Parse the XHTML content with BeautifulSoup
                 soup = BeautifulSoup(content, "lxml")
-                
+
                 # Find all <p> tags
                 paragraphs = soup.find_all("p")
                 for p in paragraphs:
@@ -87,12 +154,12 @@ class TextExtractor:
                                 ruby.replace_with(f"{rb.get_text(strip=True)}({rt.get_text(strip=True)})")
                             elif rb:
                                 ruby.replace_with(rb.get_text(strip=True))  # Fallback to kanji only
-                            
+
                         # Extract text from <span> elements (e.g., class_s91 for punctuation)
                         spans = p.find_all("span")
                         for span in spans:
                             span.replace_with(span.get_text(strip=True))  # Replace span with its text
-                        
+
                         # Get the cleaned paragraph text
                         paragraph_text = p.get_text(strip=True)
                         if paragraph_text:
@@ -100,7 +167,7 @@ class TextExtractor:
                         else:
                             # Write a blank line for empty <p> tags
                             outfile.write("\n")
-                
+
                 # Add an extra newline between files
                 outfile.write("\n")
 

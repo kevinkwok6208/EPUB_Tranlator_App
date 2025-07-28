@@ -3,7 +3,7 @@ import re
 import json
 from bs4 import BeautifulSoup
 import sys
-from file_manager import find_subfolder_path
+from tools.file_manager import find_subfolder_path
 from pathlib import Path
 import xml.etree.ElementTree as ET
 

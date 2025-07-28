@@ -6,9 +6,9 @@ import glob
 from typing import List, Dict
 from bs4 import BeautifulSoup
 import sys
-from file_manager import find_subfolder_path
+from tools.file_manager import find_subfolder_path
 from pathlib import Path
-from text_extractor import TextExtractor
+from tools.text_extractor import TextExtractor
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""

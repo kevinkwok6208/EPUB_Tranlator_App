@@ -28,8 +28,18 @@ venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### 4. Build the application
+### 4.1 Build the application (MacOS)
 
 ```bash
-pyinstaller --windowed --name EPUBTranslator compiler.py
+pyinstaller --windowed --name EPUBTranslator \
+    --add-data "prompts:prompts" \
+    compiler.py
+```
+
+### 4.2 Build the application (Windows)
+
+```bash
+pyinstaller --windowed --name EPUBTranslator ^
+    --add-data "prompts;prompts" ^
+    compiler.py
 ```

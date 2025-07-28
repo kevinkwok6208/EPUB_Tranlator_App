@@ -6,8 +6,9 @@ import glob
 from typing import List, Dict
 from bs4 import BeautifulSoup
 import sys
-from file_manager import find_subfolder_path
+from tools.file_manager import find_subfolder_path
 from pathlib import Path
+from tools.text_extractor import TextExtractor
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""
@@ -82,13 +83,35 @@ class TranslationCache:
 class Translator:
     """Handles translation operations using OpenAI API"""
     
-    def __init__(self, api_url: str, api_key: str, model: str):
+    def __init__(self, api_url: str, api_key: str, model: str, target_language: str = "traditional_chinese"):
         self.client = OpenAI(base_url=api_url, api_key=api_key)
         self.model = model
         self.text_analyzer = TextAnalyzer()
+        self.target_language = target_language
+        self.prompts = self._load_prompts()
+
+    def _load_prompts(self) -> dict:
+        """Load language-specific prompts from language_prompt.json."""
+        prompt_file = os.path.join(get_base_path(), "..", "Resources", "prompts", "language_prompt.json")
+        try:
+            with open(prompt_file, 'r', encoding='utf-8') as f:
+                prompts = json.load(f)
+                if self.target_language not in prompts:
+                    raise ValueError(f"No prompts found for target language: {self.target_language} in {prompt_file}")
+                required_keys = ["batch_prompt", "batch_system_prompt", "single_prompt", "single_system_prompt"]
+                for key in required_keys:
+                    if key not in prompts[self.target_language]:
+                        raise ValueError(f"Missing required prompt key '{key}' for language '{self.target_language}' in {prompt_file}")
+                return prompts[self.target_language]
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Prompt file {prompt_file} not found. Please create it with appropriate language prompts.")
+        except json.JSONDecodeError:
+            raise ValueError(f"Error decoding JSON in {prompt_file}. Please ensure it is valid JSON.")
+        except Exception as e:
+            raise Exception(f"Error loading prompts from {prompt_file}: {e}")
 
     def batch_translate_for_json(self, texts: List[str], cache: TranslationCache, batch_size: int = 5) -> Dict[str, str]:
-        """Translate a batch of texts to Traditional Chinese, expecting newline-separated response."""
+        """Translate a batch of texts to the target language, expecting newline-separated response."""
         translations = {}
         if not texts:
             return translations
@@ -111,19 +134,7 @@ class Translator:
         if not uncached_texts:
             return translations
 
-        prompt = (
-            "Translate the following texts to **Traditional Chinese (繁體中文)**. "
-            "Each translation must be separated by a newline (\\n). "
-            "Maintain the exact order of the input texts.\n\n"
-            "### Rules:\n"
-            "1. Use **exclusively Traditional Chinese characters** (e.g., 「圖」 not 「图」).\n"
-            "2. Never use Simplified Chinese characters.\n"
-            "3. Preserve original formatting, punctuation, and line breaks within each text.\n"
-            "4. Localize names/titles appropriately for Traditional Chinese audiences.\n"
-            "5. If the text is already in Chinese, verify it's Traditional Chinese or convert it.\n\n"
-            "Input texts (in order):\n"
-        )
-
+        prompt = self.prompts["batch_prompt"]
         for idx, text in enumerate(uncached_texts, 1):
             prompt += f"{idx}. {text}\n"
 
@@ -133,16 +144,7 @@ class Translator:
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "You are a professional translator specialized in translating from any language to **Traditional Chinese**.\n"
-                            "### Key Rules:\n"
-                            "1. **Always** output in Traditional Chinese (繁體中文).\n"
-                            "2. Reject any Simplified Chinese characters.\n"
-                            "3. Maintain original formatting, including spaces and punctuation within each text.\n"
-                            "4. Localize terms appropriately (e.g., 'software' → '軟體', not '软件').\n"
-                            "5. Output translations in the exact order of input, separated by newlines (\\n).\n"
-                            "6. If the text is already Chinese, verify it's Traditional or convert it."
-                        )
+                        "content": self.prompts["batch_system_prompt"]
                     },
                     {
                         "role": "user",
@@ -181,7 +183,7 @@ class Translator:
             return {text: text for text in texts}  # Fallback to original texts
 
     def translate_single(self, text: str, cache: TranslationCache) -> str:
-        """Translate a single text to Traditional Chinese."""
+        """Translate a single text to the target language."""
         # Check cache first
         cached_translation = cache.get(text)
         if cached_translation:
@@ -198,20 +200,11 @@ class Translator:
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "You are a professional translator specialized in translating from any language to **Traditional Chinese (繁體中文)**. "
-                            "Your translations must **exclusively use Traditional Chinese characters** (e.g., 「繁體中文」, not 「简体中文」).\n\n"
-                            "### Rules:\n"
-                            "1. Preserve original formatting, punctuation, and line breaks.\n"
-                            "2. Localize names/titles appropriately for Traditional Chinese audiences.\n"
-                            "3. **Never** use Simplified Chinese characters.\n"
-                            "4. If the input is already in Chinese, confirm it's Traditional Chinese or convert it."
-                        )
+                        "content": self.prompts["single_system_prompt"]
                     },
                     {
                         "role": "user",
-                        "content": f"Translate the following text to **Traditional Chinese (繁體中文)**:\n{text}\n\n"
-                                   "**Reminder**: Use **only** Traditional Chinese characters and maintain original formatting."
+                        "content": self.prompts["single_prompt"].format(text=text)
                     }
                 ],
                 temperature=0.3
@@ -335,8 +328,8 @@ class JsonProcessor:
 class TranslatorManager:
     """Coordinates JSON translation processes"""
     
-    def __init__(self, api_url: str, api_key: str, model: str, cache_files: List[str]):
-        self.translator = Translator(api_url, api_key, model)
+    def __init__(self, api_url: str, api_key: str, model: str, cache_files: List[str], target_language: str = "traditional_chinese"):
+        self.translator = Translator(api_url, api_key, model, target_language)
         self.json_processor = JsonProcessor(cache_files)
         self.text_analyzer = TextAnalyzer()
 
@@ -374,18 +367,38 @@ class Update_Xhtml_Manager:
             return False
     
     def get_xhtml_files(self):
-        """Get all XHTML files and sort them numerically."""
-        target_folder = 'xhtml' if self.platform == 'kobo' else 'OEBPS'
-        xhtml_dir = find_subfolder_path(os.path.join(self.base_dir, "extracted_epub"), target_folder)
-        if not xhtml_dir or not os.path.exists(xhtml_dir):
-            print(f"Error: XHTML directory {xhtml_dir or target_folder} not found.")
-            return 0
-        
-        self.xhtml_files = sorted(
-            glob.glob(os.path.join(xhtml_dir, "*.xhtml")), 
-            key=get_file_number
+        """
+        Get all XHTML files in spine order using TextExtractor.find_xhtml_files.
+        Returns the number of XHTML files found.
+        """
+        # Create a temporary TextExtractor instance to use its find_xhtml_files method
+        extractor = TextExtractor(
+            input_dir=str(self.input_dir),
+            output_file="dummy.txt",  # Dummy value, not used
+            platform=self.platform
         )
-        print(f"Found {len(self.xhtml_files)} XHTML files in '{xhtml_dir}'")
+        
+        # Call find_xhtml_files (expects string base_dir)
+        xhtml_folder, xhtml_files = extractor.find_xhtml_files()
+        
+        if not xhtml_folder or not xhtml_files:
+            # Fallback to original logic
+            print("Warning: No XHTML files found via metadata. Attempting fallback search.")
+            target_folder = 'xhtml' if self.platform == 'kobo' else 'OEBPS'
+            xhtml_dir = find_subfolder_path(str(self.base_dir / "extracted_epub"), target_folder)
+            if xhtml_dir and os.path.exists(xhtml_dir):
+                self.xhtml_files = sorted(
+                    glob.glob(os.path.join(xhtml_dir, "*.xhtml")),
+                    key=get_file_number
+                )
+                xhtml_folder = xhtml_dir
+            else:
+                print(f"Error: XHTML directory {xhtml_dir or target_folder} not found in fallback search.")
+                return 0
+        
+        # Convert Path objects to strings for compatibility with update_xhtml_files
+        self.xhtml_files = [str(file) for file in xhtml_files]
+        print(f"Found {len(self.xhtml_files)} XHTML files in '{xhtml_folder}'")
         return len(self.xhtml_files)
     
     def update_xhtml_files(self):
@@ -454,8 +467,8 @@ class Update_Xhtml_Manager:
         
         updated_count = self.update_xhtml_files()
         return f"Updated {updated_count} of {file_count} XHTML files with translations from '{self.translations_file}'"
-        
-def gpt_translation(api_url: str, api_key: str, model: str, platform: str, input_dir: str, translation_json: str):
+
+def gpt_translation(api_url: str, api_key: str, model: str, platform: str, input_dir: str, translation_json: str, target_language: str = "traditional_chinese"):
     """Main function to run the translation and XHTML update process."""
     # Configuration
     base_dir = get_base_path()
@@ -470,7 +483,7 @@ def gpt_translation(api_url: str, api_key: str, model: str, platform: str, input
     os.makedirs(os.path.join(base_dir, 'temp'), exist_ok=True)
 
     # Initialize and run the manager
-    manager = TranslatorManager(api_url, api_key, model, cache_files)
+    manager = TranslatorManager(api_url, api_key, model, cache_files, target_language=target_language)
     manager.process_all()
 
     xhtml_updator = Update_Xhtml_Manager(input_dir=input_dir, translations_file=translation_json, platform=platform)

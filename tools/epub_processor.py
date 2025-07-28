@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import re
 import sys
-from file_manager import find_subfolder_path
+from tools.file_manager import find_subfolder_path
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""

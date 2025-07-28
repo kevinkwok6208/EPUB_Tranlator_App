@@ -8,13 +8,13 @@ import threading
 import subprocess
 from io import StringIO
 import json
-import epub_processor 
-import file_manager
-import text_extractor
-import translator
+import tools.epub_processor as epub_processor 
+import tools.file_manager as file_manager
+import tools.text_extractor as text_extractor
+import tools.translator as translator
 import time
 import traceback
-from file_manager import find_subfolder_path
+from tools.file_manager import find_subfolder_path
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""

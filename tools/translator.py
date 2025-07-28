@@ -6,7 +6,6 @@ import glob
 from typing import List, Dict
 from bs4 import BeautifulSoup
 import sys
-from tools.file_manager import find_subfolder_path
 from pathlib import Path
 from tools.text_extractor import TextExtractor
 
@@ -382,19 +381,8 @@ class Update_Xhtml_Manager:
         xhtml_folder, xhtml_files = extractor.find_xhtml_files()
         
         if not xhtml_folder or not xhtml_files:
-            # Fallback to original logic
-            print("Warning: No XHTML files found via metadata. Attempting fallback search.")
-            target_folder = 'xhtml' if self.platform == 'kobo' else 'OEBPS'
-            xhtml_dir = find_subfolder_path(str(self.base_dir / "extracted_epub"), target_folder)
-            if xhtml_dir and os.path.exists(xhtml_dir):
-                self.xhtml_files = sorted(
-                    glob.glob(os.path.join(xhtml_dir, "*.xhtml")),
-                    key=get_file_number
-                )
-                xhtml_folder = xhtml_dir
-            else:
-                print(f"Error: XHTML directory {xhtml_dir or target_folder} not found in fallback search.")
-                return 0
+            print("Error: No XHTML files found.")
+            return 0
         
         # Convert Path objects to strings for compatibility with update_xhtml_files
         self.xhtml_files = [str(file) for file in xhtml_files]

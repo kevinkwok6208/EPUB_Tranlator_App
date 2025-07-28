@@ -14,7 +14,6 @@ import tools.text_extractor as text_extractor
 import tools.translator as translator
 import time
 import traceback
-from tools.file_manager import find_subfolder_path
 
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""
@@ -107,17 +106,27 @@ class TranslationApp:
         self.model_entry = ttk.Entry(self.main_frame, width=50)
         self.model_entry.grid(row=4, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
+        ttk.Label(self.main_frame, text="Target Language:").grid(row=5, column=0, sticky=tk.W, pady=5)
+        self.language_var = tk.StringVar(value="traditional_chinese")
+        self.language_menu = ttk.Combobox(
+            self.main_frame,
+            textvariable=self.language_var,
+            values=["traditional_chinese", "simplified_chinese"],  # Add more languages as needed
+            state="readonly",
+            width=47
+        )
+        self.language_menu.grid(row=5, column=1, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+        
         self.load_credentials()
         
         self.translate_button = ttk.Button(self.main_frame, text="Translate", command=self.translate)
-        self.translate_button.grid(row=5, column=1, pady=10)
-        ttk.Button(self.main_frame, text="Start New Book", command=self.clear_temp).grid(row=5, column=2, pady=10)
-        ttk.Button(self.main_frame, text="Focus Window", command=self.focus_window).grid(row=5, column=0, pady=10)
-        ttk.Button(self.main_frame, text="Reveal Output", command=self.reveal_output).grid(row=6, column=1, pady=10)
-        
-        ttk.Label(self.main_frame, text="Log:").grid(row=7, column=0, sticky=tk.W, pady=5)
+        self.translate_button.grid(row=6, column=1, pady=10)
+        ttk.Button(self.main_frame, text="Start New Book", command=self.clear_temp).grid(row=6, column=2, pady=10)
+        ttk.Button(self.main_frame, text="Focus Window", command=self.focus_window).grid(row=6, column=0, pady=10)
+        ttk.Button(self.main_frame, text="Reveal Output", command=self.reveal_output).grid(row=7, column=1, pady=10)
+        ttk.Label(self.main_frame, text="Log:").grid(row=8, column=0, sticky=tk.W, pady=5)
         self.log_text = scrolledtext.ScrolledText(self.main_frame, width=60, height=15, wrap=tk.WORD)
-        self.log_text.grid(row=8, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.log_text.grid(row=9, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.log_text.config(state='disabled')
         
         self.main_frame.columnconfigure(1, weight=1)
@@ -145,23 +154,26 @@ class TranslationApp:
                     self.api_url_entry.insert(0, credentials.get('api_url', 'Replace by your API URL'))
                     self.api_key_entry.insert(0, credentials.get('api_key', 'Replace by your API key'))
                     self.model_entry.insert(0, credentials.get('model', 'Replace by your model'))
+                    self.language_var.set(credentials.get('target_language', 'traditional_chinese'))
                     self.write("Credentials loaded successfully.\n")
             else:
                 self.api_url_entry.insert(0, "Replace by your API URL")
                 self.api_key_entry.insert(0, "Replace by your API key")
                 self.model_entry.insert(0, "Replace by your model")
+                self.language_var.set("traditional_chinese")
         except Exception as e:
             self.write(f"Error loading credentials: {e}\n")
             self.api_url_entry.insert(0, "Replace by your API URL")
             self.api_key_entry.insert(0, "Replace by your API key")
             self.model_entry.insert(0, "Replace by your model")
 
-    def save_credentials(self, api_url, api_key, model):
+    def save_credentials(self, api_url, api_key, model, target_language):
         credential_file = os.path.join(self.credential_dir, "credential.json")
         credentials = {
             'api_url': api_url,
             'api_key': api_key,
-            'model': model
+            'model': model,
+            'target_language': target_language
         }
         try:
             with open(credential_file, 'w') as f:
@@ -272,6 +284,7 @@ class TranslationApp:
                 api_url = self.api_url_entry.get()
                 api_key = self.api_key_entry.get()
                 model = self.model_entry.get()
+                target_language = self.language_var.get()
                 
                 if not epub_path:
                     self.write("Error: Please select an EPUB file.\n")
@@ -282,8 +295,11 @@ class TranslationApp:
                 if not platform:
                     self.write("Error: Please select a platform.\n")
                     return
+                if not target_language:
+                    self.write("Error: Please select a target language.\n")
+                    return
                 
-                self.save_credentials(api_url, api_key, model)
+                self.save_credentials(api_url, api_key, model, target_language)
                 
                 self.write("Starting EPUB processing...\n")
                 extract_dir = os.path.join(self.base_dir, "extracted_epub")
@@ -301,19 +317,21 @@ class TranslationApp:
                     self.write(traceback.format_exc() + "\n")
                     return
                 
-                # Dynamically find the appropriate subfolder
-                target_folder = 'xhtml' if platform == 'kobo' else 'OEBPS'
-                input_dir = find_subfolder_path(extract_dir, target_folder)
+                # Use TextExtractor to find the appropriate subfolder
+                self.write("Locating XHTML files...\n")
+                te = text_extractor.TextExtractor(
+                    input_dir=extract_dir,  # Start with the base extracted_epub directory
+                    output_file="dummy.txt",  # Dummy value, not used for finding files
+                    platform=platform
+                )
+                xhtml_folder, xhtml_files = te.find_xhtml_files()
                 
-                # Fallback to the other folder if the target is not found
-                if not input_dir or not os.path.exists(input_dir):
-                    fallback_folder = 'OEBPS' if platform == 'kobo' else 'xhtml'
-                    input_dir = find_subfolder_path(extract_dir, fallback_folder)
-                    if input_dir and os.path.exists(input_dir):
-                        self.write(f"Warning: Expected '{target_folder}' folder not found. Using '{fallback_folder}' instead.\n")
-                    else:
-                        self.write(f"Error: Neither '{target_folder}' nor '{fallback_folder}' directory found in extracted_epub.\n")
-                        return
+                if not xhtml_folder or not xhtml_files:
+                    self.write("Error: No XHTML files found in the EPUB structure.\n")
+                    return
+                
+                input_dir = xhtml_folder  # Use the folder determined by TextExtractor
+                self.write(f"Using XHTML directory: {input_dir}\n")
                 
                 output_file = os.path.join(self.temp_dir, 'extracted_text.txt')
                 
@@ -324,7 +342,9 @@ class TranslationApp:
                 te.extract_text()
                 te.generate_translation_cache(output_file)  # Generate translation_cache.json
                 self.write("Translating JSON content...\n")
-                translator.gpt_translation(api_url=api_url, api_key=api_key, model=model, platform=platform, input_dir=input_dir, translation_json=translation_json)
+                translator.gpt_translation(api_url=api_url, api_key=api_key, model=model, platform=platform, 
+                                         input_dir=input_dir, translation_json=translation_json, 
+                                         target_language=target_language)
                 self.write("Creating translated EPUB...\n")
                 file_manager.create_epub(trans_epub, output_epub)
                 self.write("Translation completed successfully!\n")

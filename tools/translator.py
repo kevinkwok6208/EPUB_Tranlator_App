@@ -91,23 +91,33 @@ class Translator:
 
     def _load_prompts(self) -> dict:
         """Load language-specific prompts from language_prompt.json."""
-        prompt_file = os.path.join(get_base_path(), "..", "Resources", "prompts", "language_prompt.json")
-        try:
-            with open(prompt_file, 'r', encoding='utf-8') as f:
-                prompts = json.load(f)
-                if self.target_language not in prompts:
-                    raise ValueError(f"No prompts found for target language: {self.target_language} in {prompt_file}")
-                required_keys = ["batch_prompt", "batch_system_prompt", "single_prompt", "single_system_prompt"]
-                for key in required_keys:
-                    if key not in prompts[self.target_language]:
-                        raise ValueError(f"Missing required prompt key '{key}' for language '{self.target_language}' in {prompt_file}")
-                return prompts[self.target_language]
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Prompt file {prompt_file} not found. Please create it with appropriate language prompts.")
-        except json.JSONDecodeError:
-            raise ValueError(f"Error decoding JSON in {prompt_file}. Please ensure it is valid JSON.")
-        except Exception as e:
-            raise Exception(f"Error loading prompts from {prompt_file}: {e}")
+        # Define both possible paths
+        primary_path = os.path.join(get_base_path(), "..", "Resources", "prompts", "language_prompt.json")
+        fallback_path = os.path.join(get_base_path(), "_internal", "prompts", "language_prompt.json")
+        
+        # List of paths to try
+        possible_paths = [primary_path, fallback_path]
+        
+        for prompt_file in possible_paths:
+            try:
+                with open(prompt_file, 'r', encoding='utf-8') as f:
+                    prompts = json.load(f)
+                    if self.target_language not in prompts:
+                        raise ValueError(f"No prompts found for target language: {self.target_language} in {prompt_file}")
+                    required_keys = ["batch_prompt", "batch_system_prompt", "single_prompt", "single_system_prompt"]
+                    for key in required_keys:
+                        if key not in prompts[self.target_language]:
+                            raise ValueError(f"Missing required prompt key '{key}' for language '{self.target_language}' in {prompt_file}")
+                    return prompts[self.target_language]
+            except FileNotFoundError:
+                continue  # Try the next path if the current one doesn't exist
+            except json.JSONDecodeError:
+                raise ValueError(f"Error decoding JSON in {prompt_file}. Please ensure it is valid JSON.")
+            except Exception as e:
+                raise Exception(f"Error loading prompts from {prompt_file}: {e}")
+    
+        # If none of the paths work, raise an error
+        raise FileNotFoundError(f"Prompt file not found in any of the locations: {', '.join(possible_paths)}")
 
     def batch_translate_for_json(self, texts: List[str], cache: TranslationCache, batch_size: int = 5) -> Dict[str, str]:
         """Translate a batch of texts to the target language, expecting newline-separated response."""

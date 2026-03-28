@@ -15,6 +15,21 @@ import tools.translator as translator
 import time
 import traceback
 
+# Credential sample format
+"""
+{
+    "api_url": "api_provider_url",
+    "api_key": "api_key",
+    "model": "model_choose",
+    "target_language": "traditional_chinese",
+    "extra_body": {
+        "reasoning": {
+            "enabled": false
+        }
+    }
+}
+"""
+
 def get_base_path():
     """Return the base path for the application (handles PyInstaller bundle)."""
     if getattr(sys, 'frozen', False):

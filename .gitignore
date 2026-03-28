@@ -1,0 +1,12 @@
+# build folder
+build/
+dist/
+
+*.spec
+.venv/
+*.pyc
+
+*.pycache/
+*.exe
+*.zip
+*.log

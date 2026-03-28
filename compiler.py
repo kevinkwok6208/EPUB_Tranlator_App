@@ -176,6 +176,11 @@ class TranslationApp:
             'target_language': target_language
         }
         try:
+            if os.path.exists(credential_file):
+                with open(credential_file, 'r') as f:
+                    existing = json.load(f)
+                    if existing.get('extra_body') is not None:
+                        credentials['extra_body'] = existing['extra_body']
             with open(credential_file, 'w') as f:
                 json.dump(credentials, f, indent=4)
             self.write("Credentials saved successfully.\n")
@@ -300,6 +305,15 @@ class TranslationApp:
                     return
                 
                 self.save_credentials(api_url, api_key, model, target_language)
+                extra_body = None
+                try:
+                    credential_file = os.path.join(self.credential_dir, "credential.json")
+                    if os.path.exists(credential_file):
+                        with open(credential_file, 'r') as f:
+                            cred = json.load(f)
+                            extra_body = cred.get("extra_body")
+                except Exception:
+                    pass
                 
                 self.write("Starting EPUB processing...\n")
                 extract_dir = os.path.join(self.base_dir, "extracted_epub")
@@ -344,7 +358,7 @@ class TranslationApp:
                 self.write("Translating JSON content...\n")
                 translator.gpt_translation(api_url=api_url, api_key=api_key, model=model, platform=platform, 
                                          input_dir=input_dir, translation_json=translation_json, 
-                                         target_language=target_language)
+                                         target_language=target_language, extra_body=extra_body)
                 self.write("Creating translated EPUB...\n")
                 file_manager.create_epub(trans_epub, output_epub)
                 self.write("Translation completed successfully!\n")
